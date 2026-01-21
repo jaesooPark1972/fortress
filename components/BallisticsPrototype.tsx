@@ -7,6 +7,16 @@ interface Point {
   y: number;
 }
 
+interface Bullet {
+  id: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  angle: number;
+  owner: 'player' | 'enemy';
+}
+
 interface LogEntry {
   id: string;
   timestamp: string;
@@ -19,7 +29,7 @@ interface BallisticsPrototypeProps {
   stats: GameSessionStats;
 }
 
-const playSynthSound = (type: 'fire' | 'hit' | 'miss' | 'move' | 'victory' | 'adjust' | 'explosion') => {
+const playSynthSound = (type: 'fire' | 'hit' | 'explosion' | 'victory' | 'adjust') => {
   const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
@@ -29,122 +39,61 @@ const playSynthSound = (type: 'fire' | 'hit' | 'miss' | 'move' | 'victory' | 'ad
 
   switch (type) {
     case 'fire':
-      osc.type = 'square';
-      osc.frequency.setValueAtTime(120, now);
-      osc.frequency.exponentialRampToValueAtTime(400, now + 0.1);
-      gain.gain.setValueAtTime(0.05, now);
-      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(600, now);
+      osc.frequency.exponentialRampToValueAtTime(150, now + 0.1);
+      gain.gain.setValueAtTime(0.04, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
       osc.start(now);
-      osc.stop(now + 0.2);
+      osc.stop(now + 0.1);
       break;
     case 'hit':
       osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(80, now);
-      osc.frequency.exponentialRampToValueAtTime(20, now + 0.4);
-      gain.gain.setValueAtTime(0.1, now);
-      gain.gain.linearRampToValueAtTime(0, now + 0.5);
+      osc.frequency.setValueAtTime(120, now);
+      osc.frequency.linearRampToValueAtTime(30, now + 0.15);
+      gain.gain.setValueAtTime(0.06, now);
+      gain.gain.linearRampToValueAtTime(0, now + 0.15);
       osc.start(now);
-      osc.stop(now + 0.5);
-      break;
-    case 'adjust':
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(440, now);
-      osc.frequency.linearRampToValueAtTime(880, now + 0.02);
-      gain.gain.setValueAtTime(0.01, now);
-      gain.gain.linearRampToValueAtTime(0, now + 0.02);
-      osc.start(now);
-      osc.stop(now + 0.02);
+      osc.stop(now + 0.15);
       break;
     case 'explosion':
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(100, now);
-      osc.frequency.exponentialRampToValueAtTime(10, now + 0.5);
-      gain.gain.setValueAtTime(0.2, now);
-      gain.gain.linearRampToValueAtTime(0, now + 0.6);
-      osc.start(now);
-      osc.stop(now + 0.6);
-      break;
-    case 'victory':
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(523, now);
-      osc.frequency.exponentialRampToValueAtTime(1046, now + 1);
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(60, now);
+      osc.frequency.exponentialRampToValueAtTime(1, now + 0.4);
       gain.gain.setValueAtTime(0.1, now);
-      gain.gain.linearRampToValueAtTime(0, now + 1.2);
+      gain.gain.linearRampToValueAtTime(0, now + 0.4);
       osc.start(now);
-      osc.stop(now + 1.2);
+      osc.stop(now + 0.4);
       break;
   }
 };
 
 const BallisticsPrototype: React.FC<BallisticsPrototypeProps> = ({ onShotRecorded, stats }) => {
-  // --- Progression Engine ---
+  // --- Global Constants ---
+  const PLAYER_Y = 310; // Significantly higher to ensure zero HUD interference
+
+  // --- Engine States ---
   const [matchLevel, setMatchLevel] = useState(1);
+  const [score, setScore] = useState(0);
   const [selectedObjectId, setSelectedObjectId] = useState<number | string>(1);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isPlaying, setIsPlaying] = useState(true);
   
-  // --- Game Config & Logic ---
-  const [angle, setAngle] = useState(45);
-  const [power, setPower] = useState(60);
-  const [wind, setWind] = useState(2);
-  const [weapon, setWeapon] = useState<WeaponType>('Standard');
-  const [isFiring, setIsFiring] = useState(false);
-  const [trajectory, setTrajectory] = useState<Point[]>([]);
-  const [projectilePos, setProjectilePos] = useState<Point | null>(null);
-  const [explosion, setExplosion] = useState<{x: number, y: number, color: string} | null>(null);
-  const [isShaking, setIsShaking] = useState(false);
+  // --- Game Entities ---
+  const [playerX, setPlayerX] = useState(400);
+  const [playerAngle, setPlayerAngle] = useState(0); 
+  const [playerHp, setPlayerHp] = useState(100);
+  const [enemies, setEnemies] = useState<Player[]>([]);
+  const [bullets, setBullets] = useState<Bullet[]>([]);
+  const [obstacles, setObstacles] = useState<{id: number, x: number, y: number, r: number}[]>([]);
   
-  // Players State
-  const [players, setPlayers] = useState<Player[]>([]);
-  const [currentPlayerIndex, setCurrentPlayerIndex] = useState(0);
   const [gameOver, setGameOver] = useState(false);
-  const [victoryState, setVictoryState] = useState(false);
+  const [victory, setVictory] = useState(false);
 
-  const animationRef = useRef<number | null>(null);
-  const activePlayer = players[currentPlayerIndex];
-
-  // --- Terrain Generator ---
-  // A simple function to generate a mountain height at x
-  const terrainHeight = useCallback((x: number) => {
-    // Large center mountain + some noise
-    const center = 400;
-    const peak = 180; // High mountain
-    const width = 200;
-    const mountain = Math.max(0, peak * Math.exp(-Math.pow(x - center, 2) / (2 * Math.pow(width, 2))));
-    return 350 - mountain; // Ground starts at 350
-  }, []);
-
-  // --- Init Match Level ---
-  const initLevel = useCallback((level: number) => {
-    const newPlayers: Player[] = [
-      { id: 1, name: 'Commander_Neo', x: 80, y: terrainHeight(80) - 10, hp: 100, maxHp: 100, color: '#3b82f6', isAI: false }
-    ];
-    // Add AIs based on level
-    for (let i = 0; i < level; i++) {
-      const xPos = 550 + (i * 60);
-      newPlayers.push({
-        id: i + 2,
-        name: `Enemy_Drone_${i + 1}`,
-        x: xPos,
-        y: terrainHeight(xPos) - 10,
-        hp: 50 + (level * 10),
-        maxHp: 50 + (level * 10),
-        color: '#f43f5e',
-        isAI: true
-      });
-    }
-    setPlayers(newPlayers);
-    setCurrentPlayerIndex(0);
-    setGameOver(false);
-    setVictoryState(false);
-    setWind(Math.floor(Math.random() * 11) - 5);
-    addLog(`Engagement Level ${level} Started: 1 vs ${level}`, 'Info');
-  }, [terrainHeight]);
-
-  useEffect(() => {
-    addLog("Unity Neo Engine initialized.", "Success");
-    initLevel(1);
-  }, []);
+  const requestRef = useRef<number | null>(null);
+  const lastFireTime = useRef(0);
+  const enemyMoveTick = useRef(0);
+  const keysPressed = useRef<Set<string>>(new Set());
 
   const addLog = (message: string, type: LogEntry['type'] = 'Info') => {
     const entry: LogEntry = {
@@ -156,388 +105,319 @@ const BallisticsPrototype: React.FC<BallisticsPrototypeProps> = ({ onShotRecorde
     setLogs(prev => [entry, ...prev].slice(0, 50));
   };
 
-  // --- AI Shooting Logic ---
-  const executeAITurn = useCallback(() => {
-    if (!activePlayer || !activePlayer.isAI || gameOver) return;
+  const initMission = useCallback((level: number) => {
+    const newEnemies: Player[] = [];
+    const cols = Math.min(level + 2, 8);
+    const count = level * 3;
+    for (let i = 0; i < count; i++) {
+      newEnemies.push({
+        id: i + 2,
+        name: `Invader_${i+1}`,
+        x: 150 + (i % cols) * (500 / cols),
+        y: 60 + Math.floor(i / cols) * 45,
+        hp: 20 + (level * 5),
+        maxHp: 20 + (level * 5),
+        color: '#f43f5e'
+      });
+    }
 
-    // Simulate "thinking"
-    setTimeout(() => {
-      // Aim at player (Index 0)
-      const target = players[0];
-      const dx = target.x - activePlayer.x;
-      const dy = target.y - activePlayer.y;
-      
-      // Rough calculation for AI
-      const dist = Math.abs(dx);
-      let aiPower = 50 + (dist / 10) + (Math.random() * 10 - 5);
-      let aiAngle = 45 + (Math.random() * 20 - 10);
-      
-      // Compensate for wind
-      aiPower -= wind * 2;
+    const newObstacles = [];
+    if (level > 2) {
+      for (let i = 0; i < Math.min(level, 3); i++) {
+        newObstacles.push({ id: i, x: 250 + i * 150, y: 180 + (Math.sin(i) * 30), r: 15 });
+      }
+    }
 
-      setAngle(Math.round(aiAngle));
-      setPower(Math.round(aiPower));
-      
-      setTimeout(() => {
-        fire();
-      }, 1000);
-    }, 1500);
-  }, [activePlayer, players, wind, gameOver]);
+    setEnemies(newEnemies);
+    setObstacles(newObstacles);
+    setBullets([]);
+    setPlayerHp(100);
+    setPlayerX(400);
+    setPlayerAngle(0);
+    setGameOver(false);
+    setVictory(false);
+    addLog(`Red Interceptor Ignition Level ${level}. Simulation clear.`, "Success");
+  }, []);
 
   useEffect(() => {
-    if (activePlayer?.isAI && isPlaying && !isFiring && !gameOver) {
-      executeAITurn();
+    initMission(1);
+  }, [initMission]);
+
+  const update = useCallback(() => {
+    if (!isPlaying || gameOver) return;
+
+    // Movement
+    if (keysPressed.current.has('ArrowLeft')) setPlayerX(prev => Math.max(50, prev - 8));
+    if (keysPressed.current.has('ArrowRight')) setPlayerX(prev => Math.min(750, prev + 8));
+    if (keysPressed.current.has('ArrowUp')) setPlayerAngle(prev => Math.max(-50, prev - 3));
+    if (keysPressed.current.has('ArrowDown')) setPlayerAngle(prev => Math.min(50, prev + 3));
+
+    // Shooting
+    if (keysPressed.current.has(' ')) {
+      const now = Date.now();
+      if (now - lastFireTime.current > 140) {
+        const rad = ((playerAngle - 90) * Math.PI) / 180;
+        setBullets(prev => [...prev, {
+          id: now,
+          x: playerX + Math.cos(rad) * 25,
+          y: PLAYER_Y + Math.sin(rad) * 25,
+          vx: Math.cos(rad) * 14,
+          vy: Math.sin(rad) * 14,
+          angle: playerAngle,
+          owner: 'player'
+        }]);
+        playSynthSound('fire');
+        lastFireTime.current = now;
+      }
     }
-  }, [currentPlayerIndex, activePlayer, isPlaying, isFiring, gameOver]);
 
-  // --- Controls ---
-  const movePlayer = useCallback((dir: 'left' | 'right') => {
-    if (isFiring || gameOver || !isPlaying || activePlayer.isAI) return;
-    const stepSize = 10;
-    const newX = dir === 'left' ? activePlayer.x - stepSize : activePlayer.x + stepSize;
-    if (newX < 20 || newX > 300) return; // Prevent crossing middle
-
-    setPlayers(prev => {
-      const next = [...prev];
-      next[currentPlayerIndex] = { ...next[currentPlayerIndex], x: newX, y: terrainHeight(newX) - 10 };
+    // Physics
+    setBullets(prev => {
+      const next: Bullet[] = [];
+      prev.forEach(b => {
+        const nx = b.x + b.vx;
+        const ny = b.y + b.vy;
+        if (ny > -50 && ny < 450 && nx > -50 && nx < 850) {
+          next.push({ ...b, x: nx, y: ny });
+        }
+      });
       return next;
     });
-  }, [activePlayer, currentPlayerIndex, isFiring, gameOver, isPlaying, terrainHeight]);
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (!isPlaying || isFiring || gameOver || activePlayer?.isAI) return;
-      if (e.key === 'ArrowLeft') movePlayer('left');
-      if (e.key === 'ArrowRight') movePlayer('right');
-      if (e.key === 'ArrowUp') setAngle(prev => Math.min(90, prev + 1));
-      if (e.key === 'ArrowDown') setAngle(prev => Math.max(0, prev - 1));
-      if (e.key === ' ') fire();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [movePlayer, isFiring, gameOver, isPlaying, activePlayer]);
+    enemyMoveTick.current += 0.025;
+    setEnemies(prev => prev.map(e => ({
+      ...e,
+      x: e.x + Math.sin(enemyMoveTick.current) * 2.5,
+    })));
 
-  // --- Physics ---
-  const calculateTrajectory = useCallback(() => {
-    if (!activePlayer) return [];
-    const points: Point[] = [];
-    const rad = (angle * Math.PI) / 180;
-    const direction = activePlayer.x < 400 ? 1 : -1; 
-    let vx = Math.cos(rad) * (power / 5) * direction;
-    let vy = -Math.sin(rad) * (power / 5);
-    let x = activePlayer.x;
-    let y = activePlayer.y - 15;
-    const g = 0.15;
-    const w = wind * 0.05;
-
-    for (let t = 0; t < 300; t++) {
-      points.push({ x, y });
-      vx += w; vy += g; x += vx; y += vy;
-      // Terrain Collision Check
-      if (y > terrainHeight(x)) {
-        points.push({ x, y: terrainHeight(x) });
-        break;
+    if (Math.random() < 0.012 + (matchLevel * 0.005)) {
+      const livingEnemies = enemies.filter(e => e.hp > 0);
+      if (livingEnemies.length > 0) {
+        const shooter = livingEnemies[Math.floor(Math.random() * livingEnemies.length)];
+        const dx = playerX - shooter.x;
+        const dy = PLAYER_Y - shooter.y;
+        const dist = Math.hypot(dx, dy);
+        setBullets(prev => [...prev, {
+          id: Date.now() + Math.random(),
+          x: shooter.x,
+          y: shooter.y + 20,
+          vx: (dx / dist) * 4.5,
+          vy: (dy / dist) * 4.5,
+          angle: 180,
+          owner: 'enemy'
+        }]);
       }
-      if (x > 800 || x < 0 || y > 450) break;
     }
-    return points;
-  }, [angle, power, wind, activePlayer, terrainHeight]);
+
+    requestRef.current = requestAnimationFrame(update);
+  }, [isPlaying, gameOver, enemies, playerX, playerAngle, matchLevel]);
 
   useEffect(() => {
-    if (gameOver || !activePlayer) return;
-    setTrajectory(calculateTrajectory());
-  }, [angle, power, wind, calculateTrajectory, activePlayer?.x, gameOver]);
+    requestRef.current = requestAnimationFrame(update);
+    return () => cancelAnimationFrame(requestRef.current!);
+  }, [update]);
 
-  const fire = () => {
-    if (isFiring || gameOver || !activePlayer) return;
-    setIsFiring(true);
-    playSynthSound('fire');
-    addLog(`Unit ${activePlayer.name} initiated payload delivery.`, "Info");
+  useEffect(() => {
+    if (!isPlaying || gameOver) return;
 
-    let currentStep = 0;
-    const points = calculateTrajectory();
-    const animate = () => {
-      if (currentStep < points.length - 1) {
-        currentStep += 2;
-        const currentPos = points[Math.min(currentStep, points.length - 1)];
-        setProjectilePos(currentPos);
+    bullets.forEach(b => {
+      obstacles.forEach(obs => {
+        if (Math.hypot(b.x - obs.x, b.y - obs.y) < obs.r) {
+          setBullets(prev => prev.filter(bullet => bullet.id !== b.id));
+        }
+      });
 
-        // Check against ALL other players
-        let hitIdx = -1;
-        players.forEach((p, idx) => {
-          if (idx === currentPlayerIndex || p.hp <= 0) return;
-          const dist = Math.hypot(p.x - currentPos.x, (p.y - 15) - currentPos.y);
-          if (dist < 25) hitIdx = idx;
+      if (b.owner === 'player') {
+        enemies.forEach(e => {
+          if (e.hp > 0 && Math.abs(b.x - e.x) < 30 && Math.abs(b.y - e.y) < 30) {
+            setEnemies(prev => prev.map(enemy => enemy.id === e.id ? { ...enemy, hp: Math.max(0, enemy.hp - 10) } : enemy));
+            setBullets(prev => prev.filter(bullet => bullet.id !== b.id));
+            setScore(s => s + 250);
+            playSynthSound('hit');
+            addLog(`Impact confirmed on ${e.name}. Vector cleared.`, "Success");
+          }
         });
-
-        if (hitIdx !== -1) {
-          handleHit(currentPos, hitIdx);
-          cancelAnimationFrame(animationRef.current!);
-          return;
-        }
-
-        // Terrain hit check at end of path
-        if (currentStep >= points.length - 2 && currentPos.y >= terrainHeight(currentPos.x) - 5) {
-          handleMiss(currentPos);
-          cancelAnimationFrame(animationRef.current!);
-          return;
-        }
-
-        animationRef.current = requestAnimationFrame(animate);
       } else {
-        handleMiss(points[points.length - 1]);
+        if (Math.abs(b.x - playerX) < 28 && Math.abs(b.y - PLAYER_Y) < 28) {
+          setPlayerHp(h => Math.max(0, h - 20));
+          setBullets(prev => prev.filter(bullet => bullet.id !== b.id));
+          playSynthSound('hit');
+          addLog("DANGER: Fighter hull breach detected!", "Error");
+        }
       }
-    };
-    animate();
-  };
-
-  const handleHit = (pos: Point, targetIndex: number) => {
-    setIsFiring(false);
-    setProjectilePos(null);
-    setExplosion({ x: pos.x, y: pos.y, color: '#f43f5e' });
-    setIsShaking(true);
-    playSynthSound('explosion');
-    
-    const target = players[targetIndex];
-    addLog(`Critical Impact on ${target.name}!`, "Success");
-
-    setPlayers(prev => {
-      const next = [...prev];
-      next[targetIndex] = { ...next[targetIndex], hp: Math.max(0, next[targetIndex].hp - 40) };
-      return next;
     });
 
-    setTimeout(() => {
-      setExplosion(null);
-      setIsShaking(false);
-      checkMatchOver();
-    }, 800);
-  };
-
-  const handleMiss = (pos: Point) => {
-    setIsFiring(false);
-    setProjectilePos(null);
-    setExplosion({ x: pos.x, y: pos.y, color: '#94a3b8' });
-    playSynthSound('explosion');
-    addLog(`Impact at [${Math.round(pos.x)}, ${Math.round(pos.y)}]. No structural damage.`, "Warning");
-    setTimeout(() => {
-      setExplosion(null);
-      nextTurn();
-    }, 800);
-  };
-
-  const checkMatchOver = () => {
-    setPlayers(currentPlayers => {
-      const playerAlive = currentPlayers[0].hp > 0;
-      const enemiesAlive = currentPlayers.slice(1).some(p => p.hp > 0);
-
-      if (!playerAlive) {
-        setGameOver(true);
-        setVictoryState(false);
-        addLog("Mission Failure: Commander Lost.", "Error");
-      } else if (!enemiesAlive) {
-        setGameOver(true);
-        setVictoryState(true);
-        playSynthSound('victory');
-        addLog(`Victory! Area Cleared. Progression Initiated.`, "Success");
-      } else {
-        nextTurn();
-      }
-      return currentPlayers;
-    });
-  };
-
-  const nextTurn = () => {
-    setPlayers(currentPlayers => {
-      let nextIdx = (currentPlayerIndex + 1) % currentPlayers.length;
-      // Skip dead players
-      while (currentPlayers[nextIdx].hp <= 0) {
-        nextIdx = (nextIdx + 1) % currentPlayers.length;
-      }
-      setCurrentPlayerIndex(nextIdx);
-      setWind(Math.floor(Math.random() * 11) - 5);
-      return currentPlayers;
-    });
-  };
-
-  const handleNextLevel = () => {
-    const nextLevel = matchLevel + 1;
-    setMatchLevel(nextLevel);
-    initLevel(nextLevel);
-  };
-
-  const handleRestart = () => {
-    setMatchLevel(1);
-    initLevel(1);
-  };
-
-  // Terrain Path Data
-  const terrainPath = useMemo(() => {
-    let path = "M 0 450 L 0 350";
-    for (let x = 0; x <= 800; x += 10) {
-      path += ` L ${x} ${terrainHeight(x)}`;
+    if (playerHp <= 0) {
+      setGameOver(true);
+      setVictory(false);
+      playSynthSound('explosion');
+      addLog("MISSION FAILED: Pilot signal lost.", "Error");
+    } else if (enemies.length > 0 && enemies.every(e => e.hp <= 0)) {
+      setGameOver(true);
+      setVictory(true);
+      addLog("Simulation Success: Sector purged.", "Success");
     }
-    path += " L 800 450 Z";
-    return path;
-  }, [terrainHeight]);
+  }, [bullets, enemies, playerX, playerHp, obstacles, isPlaying, gameOver]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => keysPressed.current.add(e.key);
+    const handleKeyUp = (e: KeyboardEvent) => keysPressed.current.delete(e.key);
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => { window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('keyup', handleKeyUp); };
+  }, []);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-140px)] bg-[#1c1c1c] overflow-hidden font-sans text-[#d4d4d4]">
-      {/* Unity Toolbar */}
-      <div className="flex items-center justify-between px-4 py-2 bg-[#2d2d2d] border-b border-[#121212] select-none">
+    <div className="flex flex-col h-[calc(100vh-140px)] bg-[#0d0d0d] overflow-hidden font-sans text-[#d4d4d4]">
+      {/* Editor Header */}
+      <div className="flex items-center justify-between px-4 py-2 bg-[#1a1a1a] border-b border-white/5 select-none">
         <div className="flex items-center gap-6">
           <div className="flex items-center gap-2">
-            <div className="w-5 h-5 bg-[#3b82f6] rounded flex items-center justify-center font-black text-xs">U</div>
-            <span className="text-[11px] font-bold opacity-80 uppercase">Fortress Neo Project</span>
+            <div className="w-5 h-5 bg-rose-600 rounded flex items-center justify-center font-black text-[10px]">R</div>
+            <span className="text-[11px] font-black opacity-80 uppercase tracking-widest">Red Interceptor Engine</span>
           </div>
-          <div className="flex items-center gap-4 ml-4">
-             <div className="bg-[#1a1a1a] px-3 py-1 rounded text-[10px] font-bold text-indigo-400 border border-white/5 uppercase">Level: {matchLevel}</div>
-             <div className="bg-[#1a1a1a] px-3 py-1 rounded text-[10px] font-bold text-rose-400 border border-white/5 uppercase">Enemies: {players.filter((p, i) => i > 0 && p.hp > 0).length}</div>
-          </div>
+          <div className="bg-[#0a0a0a] px-3 py-1 rounded text-[10px] font-bold text-rose-500 border border-white/5 uppercase tracking-tighter">Combat Level: {matchLevel}</div>
+          <div className="bg-[#0a0a0a] px-3 py-1 rounded text-[10px] font-bold text-white border border-white/5 uppercase tracking-widest">Score: {score}</div>
         </div>
-        <div className="flex items-center gap-1 bg-[#1a1a1a] p-0.5 rounded-lg border border-white/5">
-          <button onClick={() => setIsPlaying(!isPlaying)} className={`p-1.5 rounded transition-colors ${isPlaying ? 'text-indigo-400 bg-white/5' : 'text-slate-500'}`}>
+        <div className="flex items-center gap-1 bg-white/5 p-0.5 rounded-lg border border-white/5">
+          <button onClick={() => setIsPlaying(!isPlaying)} className={`p-1.5 rounded ${isPlaying ? 'text-rose-500' : 'text-slate-600'}`}>
             <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
           </button>
-          <button onClick={handleRestart} className="p-1.5 text-slate-500 hover:text-rose-400 transition-colors">
+          <button onClick={() => { setMatchLevel(1); setScore(0); initMission(1); }} className="p-1.5 text-slate-600 hover:text-white">
             <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
           </button>
         </div>
-        <div className="text-[10px] font-bold opacity-30 uppercase">Authoritative Physics Active</div>
       </div>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden relative">
         {/* Hierarchy */}
-        <div className="w-64 bg-[#232323] border-r border-[#121212] flex flex-col select-none">
-          <div className="px-3 py-2 border-b border-[#121212] flex justify-between">
-            <span className="text-[10px] font-bold uppercase opacity-60 tracking-widest">Hierarchy</span>
-          </div>
+        <div className="w-60 bg-[#121212] border-r border-white/5 flex flex-col select-none">
+          <div className="px-4 py-2 border-b border-white/5 text-[9px] font-black uppercase opacity-40">Scene Hierarchy</div>
           <div className="p-2 space-y-0.5 overflow-y-auto">
-            <div className="px-2 py-1.5 rounded text-[11px] font-medium opacity-40">MainScene</div>
-            <div className="px-4 py-1.5 rounded text-[11px] font-medium opacity-80 flex items-center gap-2">
-              <span className="text-emerald-500">🏔️</span> ProceduralMountain
+            <div onClick={() => setSelectedObjectId(1)} className={`px-4 py-2 rounded text-[11px] font-bold cursor-pointer flex items-center gap-2 ${selectedObjectId === 1 ? 'bg-rose-950 text-rose-400 border border-rose-900' : 'opacity-60 hover:bg-white/5'}`}>
+              <span className="text-rose-500">🚀</span> RED_INTERCEPTOR
             </div>
-            {players.map((p, i) => (
-              <div 
-                key={p.id} 
-                onClick={() => setSelectedObjectId(p.id)}
-                className={`px-4 py-1.5 rounded text-[11px] font-medium cursor-pointer flex items-center justify-between ${selectedObjectId === p.id ? 'bg-[#3b82f6] text-white' : 'hover:bg-white/5 opacity-80'}`}
-              >
-                <div className="flex items-center gap-2">
-                  <span>{i === 0 ? '🚜' : '🚛'}</span>
-                  <span className={p.hp <= 0 ? 'line-through opacity-40' : ''}>{p.name}</span>
-                </div>
-                {p.isAI && <span className="text-[8px] opacity-40 uppercase">AI</span>}
+            {enemies.map(e => e.hp > 0 && (
+              <div key={e.id} onClick={() => setSelectedObjectId(e.id)} className={`px-4 py-1.5 rounded text-[10px] font-bold cursor-pointer transition-colors ${selectedObjectId === e.id ? 'text-rose-400 bg-white/5' : 'opacity-30 hover:opacity-100'}`}>
+                ● {e.name}
               </div>
             ))}
           </div>
         </div>
 
-        {/* Scene Viewport */}
-        <div className="flex-1 bg-[#1a1a1a] flex flex-col relative group">
-          <div className="flex-1 flex items-center justify-center p-8">
-            <div className={`w-full aspect-video max-h-[70vh] bg-[#050505] border border-[#2d2d2d] shadow-2xl relative overflow-hidden ${isShaking ? 'animate-bounce' : ''}`}>
+        {/* Viewport */}
+        <div className="flex-1 bg-[#050505] flex flex-col relative overflow-hidden">
+          <div className="flex-1 flex items-center justify-center p-4">
+            <div className="w-full aspect-video bg-black rounded border border-white/5 shadow-[0_0_100px_rgba(0,0,0,1)] relative overflow-hidden">
               <svg width="100%" height="100%" viewBox="0 0 800 450" className="select-none cursor-default">
-                {/* Background Grid */}
-                <g opacity="0.05">
-                  {Array.from({length: 10}).map((_, i) => <line key={`v-${i}`} x1={i * 80} y1="0" x2={i * 80} y2="450" stroke="white" />)}
-                  {Array.from({length: 10}).map((_, i) => <line key={`h-${i}`} x1="0" y1={i * 45} x2="800" y2={i * 45} stroke="white" />)}
-                </g>
-
-                {/* Terrain */}
-                <path d={terrainPath} fill="#121212" stroke="#2d2d2d" strokeWidth="2" />
-
-                {/* Wind Particles */}
-                {Math.abs(wind) > 0 && Array.from({length: 10}).map((_, i) => (
-                  <rect key={i} x={(Date.now() / 10 * Math.abs(wind) + i * 100) % 800} y={50 + i * 30} width="20" height="1" fill="white" opacity="0.1" />
+                {/* Space Parallax */}
+                {Array.from({length: 60}).map((_, i) => (
+                  <circle key={i} cx={(i * 37) % 800} cy={(Date.now() / (80 - (i % 4 * 15)) + i * 40) % 450} r={i % 5 === 0 ? 1.5 : 0.7} fill="white" opacity={0.1 + (i % 9) / 10} />
                 ))}
 
-                {/* Players */}
-                {players.map((p, i) => {
-                  const isTurn = currentPlayerIndex === i && !gameOver;
-                  const isSelected = selectedObjectId === p.id;
-                  if (p.hp <= 0) return null;
-                  return (
-                    <g key={p.id} transform={`translate(${p.x}, ${p.y})`} className="cursor-pointer" onClick={() => setSelectedObjectId(p.id)}>
-                      {isSelected && <circle r="40" fill="none" stroke="#3b82f6" strokeWidth="1" strokeDasharray="4 4" className="animate-spin" style={{ animationDuration: '5s' }} />}
-                      <text x="0" y="5" textAnchor="middle" dominantBaseline="middle" fontSize="32" className={isTurn ? 'animate-pulse' : ''}>
-                        {i === 0 ? '🚜' : '🚛'}
-                      </text>
-                      <g transform="translate(0, -50)">
-                        <rect x="-25" y="-12" width="50" height="4" fill="#000" rx="2" />
-                        <rect x="-25" y="-12" width={(p.hp / p.maxHp) * 50} height="4" fill={p.hp < 30 ? '#ef4444' : p.color} rx="2" />
-                      </g>
+                {/* Shield Units */}
+                {obstacles.map(obs => (
+                  <g key={obs.id} transform={`translate(${obs.x}, ${obs.y})`}>
+                    <circle r={obs.r} fill="none" stroke="#4f46e5" strokeWidth="1" strokeDasharray="3 3" opacity="0.3" />
+                    <text x="0" y="4" textAnchor="middle" dominantBaseline="middle" fontSize="18" opacity="0.5">💠</text>
+                  </g>
+                ))}
+
+                {/* Projectiles */}
+                {bullets.map(b => (
+                  <g key={b.id}>
+                    <line x1={b.x} y1={b.y} x2={b.x - b.vx * 1.2} y2={b.y - b.vy * 1.2} stroke={b.owner === 'player' ? '#f43f5e' : '#6366f1'} strokeWidth="3" opacity="0.6" strokeLinecap="round" />
+                    <circle cx={b.x} cy={b.y} r="2.5" fill={b.owner === 'player' ? '#ff7e7e' : '#818cf8'} style={{ filter: 'drop-shadow(0 0 4px currentColor)' }} />
+                  </g>
+                ))}
+
+                {/* Invaders */}
+                {enemies.map((e, i) => e.hp > 0 && (
+                  <g key={e.id} transform={`translate(${e.x}, ${e.y})`}>
+                    <text x="0" y="0" textAnchor="middle" dominantBaseline="middle" fontSize="26" className="drop-shadow-lg opacity-80">
+                      {i % 2 === 0 ? '👾' : '🛸'}
+                    </text>
+                    <rect x="-15" y="-22" width="30" height="2" fill="#000" rx="1" />
+                    <rect x="-15" y="-22" width={(e.hp / (20 + matchLevel * 5)) * 30} height="2" fill="#4f46e5" rx="1" />
+                  </g>
+                ))}
+
+                {/* RED FIGHTER (High Visibility) */}
+                {playerHp > 0 && (
+                  <g transform={`translate(${playerX}, ${PLAYER_Y})`}>
+                    {/* Aiming Gizmo - Red Laser */}
+                    <line x1="0" y1="0" x2={Math.cos(((playerAngle - 90) * Math.PI) / 180) * 120} y2={Math.sin(((playerAngle - 90) * Math.PI) / 180) * 120} stroke="#f43f5e" strokeWidth="1.2" strokeDasharray="4 4" opacity="0.4" />
+                    
+                    {/* Red Glow Aura */}
+                    <circle r="30" fill="url(#redGlow)" opacity="0.4" className="animate-pulse" />
+                    
+                    <g transform={`rotate(${playerAngle})`}>
+                      <text x="0" y="0" textAnchor="middle" dominantBaseline="middle" fontSize="60" className="drop-shadow-[0_0_20px_rgba(244,63,94,0.8)]">🚀</text>
                     </g>
-                  );
-                })}
-
-                {/* Trajectory */}
-                {!isFiring && !gameOver && isPlaying && <path d={`M ${trajectory.map(p => `${p.x} ${p.y}`).join(' L ')}`} fill="none" stroke="#3b82f6" strokeWidth="1" strokeDasharray="5 5" opacity="0.3" />}
-
-                {/* Shell */}
-                {isFiring && projectilePos && (
-                  <g transform={`translate(${projectilePos.x}, ${projectilePos.y})`}>
-                    <circle r="4" fill="#fbbf24" filter="blur(1px)" />
-                    <text x="0" y="0" textAnchor="middle" dominantBaseline="middle" fontSize="20">💣</text>
+                    {selectedObjectId === 1 && <circle r="42" fill="none" stroke="#f43f5e" strokeWidth="1.5" strokeDasharray="8 8" className="animate-spin" style={{ animationDuration: '10s' }} />}
                   </g>
                 )}
 
-                {/* FX */}
-                {explosion && <g transform={`translate(${explosion.x}, ${explosion.y})`}><circle r="40" fill={explosion.color} opacity="0.2" className="animate-ping" /><circle r="10" fill="white" filter="blur(4px)" /></g>}
+                <defs>
+                  <radialGradient id="redGlow">
+                    <stop offset="0%" stopColor="#f43f5e" stopOpacity="0.8" />
+                    <stop offset="100%" stopColor="#f43f5e" stopOpacity="0" />
+                  </radialGradient>
+                </defs>
               </svg>
 
-              {/* Game Over Overlays */}
+              {/* Game Over UI Overlay */}
               {gameOver && (
-                <div className="absolute inset-0 bg-black/80 flex items-center justify-center backdrop-blur-sm z-50">
-                  <div className="text-center p-12 border border-white/10 rounded-3xl bg-[#121212] shadow-2xl">
-                    <h2 className={`text-4xl font-black mb-4 uppercase ${victoryState ? 'text-indigo-400' : 'text-rose-500'}`}>
-                      {victoryState ? 'Strategic Success' : 'Critical Failure'}
+                <div className="absolute inset-0 bg-black/95 flex items-center justify-center z-50 animate-in fade-in duration-500">
+                  <div className="text-center p-14 border border-white/5 rounded-[50px] bg-[#0a0a0a] shadow-3xl">
+                    <h2 className={`text-6xl font-black mb-4 uppercase italic tracking-tighter ${victory ? 'text-emerald-400' : 'text-rose-600'}`}>
+                      {victory ? 'Mission Complete' : 'System Defeat'}
                     </h2>
-                    <p className="text-slate-400 mb-8 font-bold">
-                      {victoryState ? `Target Sector Clear. Area Level ${matchLevel} Complete.` : "Sector Lost. Command Unit Destroyed."}
-                    </p>
-                    <div className="flex gap-4 justify-center">
-                       {victoryState ? (
-                         <button onClick={handleNextLevel} className="px-8 py-3 bg-indigo-600 rounded-xl font-black uppercase text-xs tracking-widest shadow-lg shadow-indigo-600/30">Next Mission (Level {matchLevel + 1})</button>
+                    <p className="text-slate-500 mb-10 font-black uppercase tracking-[0.4em] text-xs">Total Points: <span className="text-white">{score}</span></p>
+                    <div className="flex gap-6 justify-center">
+                       {victory ? (
+                         <button onClick={() => { setMatchLevel(l => l + 1); initMission(matchLevel + 1); }} className="px-12 py-5 bg-rose-600 hover:bg-rose-500 text-white rounded-3xl font-black uppercase text-xs tracking-widest shadow-2xl transition-all">Next Quadrant</button>
                        ) : (
-                         <button onClick={handleRestart} className="px-8 py-3 bg-rose-600 rounded-xl font-black uppercase text-xs tracking-widest shadow-lg shadow-rose-600/30">Retry Level 1</button>
+                         <button onClick={() => { setScore(0); initMission(1); }} className="px-12 py-5 bg-slate-800 hover:bg-slate-700 text-white rounded-3xl font-black uppercase text-xs tracking-widest shadow-2xl transition-all">Restart Loop</button>
                        )}
                     </div>
                   </div>
                 </div>
               )}
             </div>
-            
-            {/* Quick Status Bar */}
-            <div className="absolute bottom-12 left-1/2 -translate-x-1/2 flex items-center gap-12 bg-black/60 backdrop-blur px-8 py-3 rounded-full border border-white/5 shadow-2xl pointer-events-none">
-                <div className="flex flex-col items-center">
-                   <span className="text-[8px] font-black opacity-30 uppercase">Wind Vector</span>
-                   <span className="text-xs font-black text-indigo-400">{wind > 0 ? '→' : wind < 0 ? '←' : '•'} {Math.abs(wind)}m/s</span>
+
+            {/* Ghost HUD (Low Alpha, Higher Position) */}
+            <div className="absolute bottom-12 left-1/2 -translate-x-1/2 flex items-center gap-14 bg-black/10 backdrop-blur-sm px-14 py-6 rounded-[50px] border border-white/5 shadow-2xl pointer-events-none">
+              <div className="flex flex-col items-center">
+                <span className="text-[9px] font-black opacity-40 uppercase tracking-widest mb-2">Armor Plate</span>
+                <div className="w-40 h-1.5 bg-black/50 rounded-full overflow-hidden">
+                  <div className={`h-full transition-all duration-300 ${playerHp < 40 ? 'bg-rose-600' : 'bg-rose-500'}`} style={{ width: `${playerHp}%` }} />
                 </div>
-                <div className="flex flex-col items-center">
-                   <span className="text-[8px] font-black opacity-30 uppercase">Trajectory Angle</span>
-                   <span className="text-xs font-black text-white">{angle}°</span>
-                </div>
-                <div className="flex flex-col items-center">
-                   <span className="text-[8px] font-black opacity-30 uppercase">Active Turn</span>
-                   <span className={`text-xs font-black uppercase ${activePlayer?.isAI ? 'text-rose-500' : 'text-indigo-500'}`}>
-                     {activePlayer?.name} {activePlayer?.isAI ? '(AI)' : '(You)'}
-                   </span>
-                </div>
+              </div>
+              <div className="h-10 w-px bg-white/5" />
+              <div className="flex flex-col items-center">
+                <span className="text-[9px] font-black opacity-40 uppercase tracking-widest mb-1 text-rose-500">Target Arc</span>
+                <span className="text-xl font-black text-white italic tracking-tighter">{playerAngle}°</span>
+              </div>
+              <div className="h-10 w-px bg-white/5" />
+              <div className="flex flex-col items-center">
+                <span className="text-[9px] font-black opacity-40 uppercase tracking-widest mb-1">Drones</span>
+                <span className="text-xl font-black text-rose-400">{enemies.filter(e=>e.hp>0).length}</span>
+              </div>
             </div>
           </div>
 
-          {/* Console */}
-          <div className="h-40 bg-[#232323] border-t border-[#121212] flex flex-col">
-            <div className="px-3 py-1.5 border-b border-[#121212] flex items-center justify-between text-[10px] font-bold uppercase tracking-widest opacity-60">
-              <span>Output Console</span>
-              <button onClick={() => setLogs([])} className="opacity-40 hover:opacity-100">Clear</button>
+          {/* Minimal Console */}
+          <div className="h-32 bg-[#0a0a0a] border-t border-white/5 flex flex-col font-mono">
+            <div className="px-4 py-1.5 border-b border-white/5 text-[9px] font-black opacity-20 flex justify-between uppercase">
+              <span>Simulation Vector Stream</span>
+              <button onClick={() => setLogs([])}>Reset_Logs</button>
             </div>
-            <div className="flex-1 overflow-y-auto p-2 font-mono text-[9px] space-y-1">
+            <div className="flex-1 overflow-y-auto p-3 text-[10px] space-y-0.5">
               {logs.map(log => (
-                <div key={log.id} className={`flex gap-3 px-2 py-0.5 rounded ${log.type === 'Warning' ? 'text-yellow-500' : log.type === 'Error' ? 'text-rose-500' : log.type === 'Success' ? 'text-indigo-400' : 'opacity-80'}`}>
-                  <span className="opacity-30">[{log.timestamp}]</span>
-                  <span className="font-bold">[{log.type.toUpperCase()}]</span>
+                <div key={log.id} className={`flex gap-4 ${log.type === 'Error' ? 'text-rose-500' : log.type === 'Success' ? 'text-rose-400' : 'opacity-40'}`}>
+                  <span className="opacity-20 flex-shrink-0">[{log.timestamp}]</span>
+                  <span className="font-bold">[{log.type}]</span>
                   <span>{log.message}</span>
                 </div>
               ))}
@@ -546,84 +426,54 @@ const BallisticsPrototype: React.FC<BallisticsPrototypeProps> = ({ onShotRecorde
         </div>
 
         {/* Inspector */}
-        <div className="w-80 bg-[#232323] border-l border-[#121212] flex flex-col select-none overflow-y-auto">
-          <div className="px-3 py-2 border-b border-[#121212] flex items-center gap-2">
-            <span className="text-[10px] font-black uppercase opacity-60">Inspector</span>
+        <div className="w-80 bg-[#121212] border-l border-white/5 flex flex-col select-none overflow-y-auto">
+          <div className="px-4 py-3 border-b border-white/5 bg-[#181818] flex items-center justify-between">
+            <span className="text-[10px] font-black uppercase opacity-60">Property Inspector</span>
+            <div className="w-2 h-2 bg-rose-500 rounded-full animate-pulse"></div>
           </div>
           
-          <div className="p-4 space-y-6">
-            {typeof selectedObjectId === 'number' && players.find(p => p.id === selectedObjectId) ? (
-              <>
+          <div className="p-6 space-y-8">
+            {selectedObjectId === 1 ? (
+              <div className="space-y-8">
                 <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 bg-black border border-white/5 rounded-xl flex items-center justify-center text-2xl">
-                    {selectedObjectId === 1 ? '🚜' : '🚛'}
-                  </div>
+                  <div className="w-16 h-16 bg-black border border-rose-500/20 rounded-[35px] flex items-center justify-center text-4xl shadow-2xl">🚀</div>
                   <div>
-                    <h3 className="text-xs font-bold text-white">{players.find(p => p.id === selectedObjectId)?.name}</h3>
-                    <p className="text-[9px] opacity-40 uppercase">Instance Component</p>
+                    <h3 className="text-sm font-black text-white uppercase tracking-tighter">F9_INTERCEPTOR</h3>
+                    <p className="text-[9px] text-rose-500 font-black uppercase opacity-60 tracking-widest">Active_GameObject</p>
                   </div>
                 </div>
 
-                <div className="space-y-4 pt-4 border-t border-white/5">
-                  <div className="space-y-1">
-                    <span className="text-[9px] font-black opacity-30 uppercase tracking-widest">Transform Data</span>
-                    <div className="grid grid-cols-2 gap-2 text-[10px] font-mono">
-                       <div className="bg-black/20 p-2 rounded border border-white/5 flex justify-between">
-                         <span className="text-rose-500">X</span>
-                         <span>{Math.round(players.find(p => p.id === selectedObjectId)!.x)}</span>
-                       </div>
-                       <div className="bg-black/20 p-2 rounded border border-white/5 flex justify-between">
-                         <span className="text-emerald-500">Y</span>
-                         <span>{Math.round(players.find(p => p.id === selectedObjectId)!.y)}</span>
-                       </div>
+                <div className="space-y-6 pt-6 border-t border-white/5">
+                  <div className="bg-black/40 p-5 rounded-3xl border border-white/5 space-y-4">
+                    <span className="text-[9px] font-black opacity-30 uppercase tracking-widest">Transform Matrix</span>
+                    <div className="grid grid-cols-2 gap-3 text-xs">
+                       <div className="bg-black p-2 rounded-xl flex justify-between border border-white/5"><span className="text-rose-500">X</span><span>{Math.round(playerX)}</span></div>
+                       <div className="bg-black p-2 rounded-xl flex justify-between border border-white/5"><span className="text-indigo-400">R</span><span>{playerAngle}°</span></div>
                     </div>
                   </div>
 
-                  {!players.find(p => p.id === selectedObjectId)!.isAI && (
-                    <div className="space-y-6 pt-4 border-t border-white/5">
-                      <div className="space-y-3">
-                        <div className="flex justify-between text-[10px] font-bold uppercase opacity-40">
-                          <span>Barrel Elevation</span>
-                          <span>{angle}°</span>
-                        </div>
-                        <input type="range" min="0" max="90" value={angle} onChange={(e) => setAngle(Number(e.target.value))} className="w-full h-1 bg-black rounded appearance-none cursor-pointer accent-indigo-500" />
-                        <div className="flex justify-center gap-2 opacity-40">
-                           <span className="text-[8px] border border-white/20 px-1 rounded">↑</span>
-                           <span className="text-[8px] border border-white/20 px-1 rounded">↓</span>
-                           <span className="text-[8px] uppercase font-bold tracking-tighter">to adjust</span>
-                        </div>
-                      </div>
-
-                      <div className="space-y-3">
-                        <div className="flex justify-between text-[10px] font-bold uppercase opacity-40">
-                          <span>Payload Force</span>
-                          <span>{power}u</span>
-                        </div>
-                        <input type="range" min="10" max="150" value={power} onChange={(e) => setPower(Number(e.target.value))} className="w-full h-1 bg-black rounded appearance-none cursor-pointer accent-indigo-500" />
-                      </div>
-
-                      <button 
-                        onClick={fire}
-                        disabled={isFiring || gameOver || activePlayer?.isAI}
-                        className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-30 text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-xl active:scale-95"
-                      >
-                        Engage Shell (Space)
-                      </button>
+                  <div className="space-y-4">
+                    <span className="text-[9px] font-black opacity-30 uppercase tracking-widest">Ballistic Config</span>
+                    <div className="bg-black/40 p-5 rounded-3xl border border-white/5 space-y-4">
+                       <div className="flex justify-between text-[10px] font-bold opacity-60 uppercase tracking-tighter"><span>Recoil Stabilizer</span><span>88%</span></div>
+                       <div className="w-full h-1 bg-black rounded-full overflow-hidden"><div className="h-full bg-rose-600 w-[88%]" /></div>
                     </div>
-                  )}
-                  
-                  {players.find(p => p.id === selectedObjectId)!.isAI && (
-                    <div className="bg-rose-500/10 border border-rose-500/20 p-4 rounded-xl text-center">
-                       <span className="text-[10px] font-black text-rose-500 uppercase tracking-widest block mb-2">AI Routine Active</span>
-                       <p className="text-[9px] opacity-60 leading-tight italic">Analyzing atmospheric turbulence and target vector...</p>
+                  </div>
+
+                  <div className="bg-rose-600/5 rounded-3xl p-6 border border-rose-600/20 space-y-4">
+                    <span className="text-[9px] font-black text-rose-500 uppercase tracking-widest block">Input Overlays</span>
+                    <div className="space-y-3 opacity-60">
+                      <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-tighter"><span>Vector Slide</span><span className="px-2 py-1 bg-black rounded border border-white/10">← →</span></div>
+                      <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-tighter"><span>Pitch Control</span><span className="px-2 py-1 bg-black rounded border border-white/10">↑ ↓</span></div>
+                      <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-tighter"><span>Engagement</span><span className="px-2 py-1 bg-black rounded border border-white/10">SPACE</span></div>
                     </div>
-                  )}
+                  </div>
                 </div>
-              </>
+              </div>
             ) : (
-              <div className="h-64 flex flex-col items-center justify-center text-center opacity-20">
-                <span className="text-3xl mb-4">🔍</span>
-                <p className="text-[10px] font-black uppercase tracking-widest">Select entity to view properties</p>
+              <div className="flex-1 flex flex-col items-center justify-center text-center opacity-10 space-y-4 pt-40">
+                <svg className="w-20 h-20" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L1 21h22L12 2zm0 3.45l7.9 13.55H4.1L12 5.45z"/></svg>
+                <p className="text-[11px] font-black uppercase tracking-[0.4em]">Select Object<br/>to Analyze</p>
               </div>
             )}
           </div>
